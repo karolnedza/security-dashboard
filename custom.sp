@@ -103,11 +103,11 @@ query "ebs_encryption_by_default_enabled" {
     select
       'arn:aws:ec2:' || region || ':' || account_id as resource,
       case
-        when is_ebs_encryption_by_default_enabled then 'ok'
+        when default_ebs_encryption_enabled then 'ok'
         else 'alarm'
       end as status,
       case
-        when is_ebs_encryption_by_default_enabled then 'EBS encryption by default is enabled.'
+        when default_ebs_encryption_enabled then 'EBS encryption by default is enabled.'
         else 'EBS encryption by default is disabled.'
       end as reason,
       region,
