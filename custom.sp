@@ -20,7 +20,6 @@ dashboard "aws_compliance_dashboard" {
   title = "AWS Compliance Dashboard"
 
   container {
-    # Summary Cards
     card {
       query = query.compliance_summary_total
       width = 3
@@ -32,7 +31,6 @@ dashboard "aws_compliance_dashboard" {
   }
 
   container {
-    # Drill-down Tables
     table {
       title = "Storage & Encryption Compliance"
       query = query.storage_compliance_drilldown
@@ -55,7 +53,7 @@ control "ebs_encryption_by_default_enabled" {
 
 control "unattached_security_groups" {
   title       = "All non-default security groups should be attached to at least one ENI"
-  description = "Checks if all non-default security groups are attached to at least one ENI (instance, ALB, RDS, Lambda, etc.)."
+  description = "Checks if all non-default security groups are attached to at least one ENI."
   query       = query.unattached_security_groups
 }
 
@@ -85,22 +83,22 @@ control "vpc_flow_logs_enabled" {
 
 control "restricted_ingress_ports" {
   title       = "Security groups should restrict ingress on unauthorized ports"
-  description = "Checks if security groups allowing unrestricted incoming traffic (0.0.0.0/0 or ::/0) only allow inbound TCP/UDP connections on authorized ports."
+  description = "Checks for unrestricted incoming traffic (0.0.0.0/0) on non-web ports."
   query       = query.restricted_ingress_ports
 }
 
-# --- QUERIES ---
+# --- FIXED QUERIES ---
 
 query "ebs_encryption_by_default_enabled" {
   sql = <<-EOQ
     select
       'arn:aws:ec2:' || region || ':' || account_id as resource,
       case
-        when is_ebs_encryption_by_default_enabled then 'ok'
+        when ebs_encryption_by_default_enabled then 'ok'
         else 'alarm'
       end as status,
       case
-        when is_ebs_encryption_by_default_enabled then 'EBS encryption by default is enabled.'
+        when ebs_encryption_by_default_enabled then 'EBS encryption by default is enabled.'
         else 'EBS encryption by default is disabled.'
       end as reason,
       region,
@@ -112,22 +110,31 @@ query "ebs_encryption_by_default_enabled" {
 
 query "unattached_security_groups" {
   sql = <<-EOQ
+    with attached_sgs as (
+      select
+        distinct sg_id
+      from
+        aws_vpc_network_interface,
+        jsonb_array_elements(groups) as g
+        left join lateral (select g ->> 'GroupId' as sg_id) as t on true
+    )
     select
-      group_id as resource,
+      sg.group_id as resource,
       case
-        when group_name = 'default' then 'ok'
-        when network_interfaces is null or jsonb_array_length(network_interfaces) = 0 then 'alarm'
+        when sg.group_name = 'default' then 'ok'
+        when a.sg_id is null then 'alarm'
         else 'ok'
       end as status,
       case
-        when group_name = 'default' then title || ' is a default security group.'
-        when network_interfaces is null or jsonb_array_length(network_interfaces) = 0 then title || ' is not attached to any active ENI.'
-        else title || ' is attached to ' || jsonb_array_length(network_interfaces) || ' ENI(s).'
+        when sg.group_name = 'default' then sg.group_id || ' is a default security group.'
+        when a.sg_id is null then sg.group_id || ' is not attached to any ENI.'
+        else sg.group_id || ' is attached to an ENI.'
       end as reason,
       region,
       account_id
     from
-      aws_vpc_security_group;
+      aws_vpc_security_group as sg
+      left join attached_sgs as a on sg.group_id = a.sg_id;
   EOQ
 }
 
@@ -135,18 +142,10 @@ query "efs_encryption_at_rest_enabled" {
   sql = <<-EOQ
     select
       arn as resource,
-      case
-        when encrypted then 'ok'
-        else 'alarm'
-      end as status,
-      case
-        when encrypted then title || ' is encrypted at rest.'
-        else title || ' is not encrypted at rest.'
-      end as reason,
-      region,
-      account_id
-    from
-      aws_efs_file_system;
+      case when encrypted then 'ok' else 'alarm' end as status,
+      case when encrypted then title || ' is encrypted.' else title || ' is not encrypted.' end as reason,
+      region, account_id
+    from aws_efs_file_system;
   EOQ
 }
 
@@ -154,20 +153,10 @@ query "ebs_attached_volume_encryption_enabled" {
   sql = <<-EOQ
     select
       arn as resource,
-      case
-        when encrypted then 'ok'
-        else 'alarm'
-      end as status,
-      case
-        when encrypted then title || ' is encrypted.'
-        else title || ' is unencrypted.'
-      end as reason,
-      region,
-      account_id
-    from
-      aws_ebs_volume
-    where
-      state = 'in-use';
+      case when encrypted then 'ok' else 'alarm' end as status,
+      case when encrypted then title || ' is encrypted.' else title || ' is unencrypted.' end as reason,
+      region, account_id
+    from aws_ebs_volume where state = 'in-use';
   EOQ
 }
 
@@ -178,42 +167,24 @@ query "guardduty_enabled" {
     )
     select
       'arn:aws:guardduty:' || r.name || ':' || r.account_id as resource,
-      case
-        when d.count > 0 then 'ok'
-        else 'alarm'
-      end as status,
-      case
-        when d.count > 0 then 'GuardDuty is enabled in ' || r.name || '.'
-        else 'No GuardDuty detector found in ' || r.name || '.'
-      end as reason,
-      r.name as region,
-      r.account_id
-    from
-      aws_region as r
-      left join detectors as d on d.region = r.name;
+      case when d.count > 0 then 'ok' else 'alarm' end as status,
+      case when d.count > 0 then 'GuardDuty enabled.' else 'GuardDuty disabled.' end as reason,
+      r.name as region, r.account_id
+    from aws_region as r left join detectors as d on d.region = r.name;
   EOQ
 }
 
 query "vpc_flow_logs_enabled" {
   sql = <<-EOQ
     with vpc_logs as (
-      select vpc_id, count(*) as log_count from aws_vpc_flow_log group by vpc_id
+      select resource_id, count(*) as log_count from aws_vpc_flow_log where resource_id like 'vpc-%' group by resource_id
     )
     select
       v.vpc_id as resource,
-      case
-        when l.log_count > 0 then 'ok'
-        else 'alarm'
-      end as status,
-      case
-        when l.log_count > 0 then v.vpc_id || ' has VPC flow logs enabled.'
-        else v.vpc_id || ' has no flow logs enabled.'
-      end as reason,
-      region,
-      account_id
-    from
-      aws_vpc as v
-      left join vpc_logs as l on v.vpc_id = l.vpc_id;
+      case when l.log_count > 0 then 'ok' else 'alarm' end as status,
+      case when l.log_count > 0 then v.vpc_id || ' has flow logs.' else v.vpc_id || ' has no flow logs.' end as reason,
+      region, account_id
+    from aws_vpc as v left join vpc_logs as l on v.vpc_id = l.resource_id;
   EOQ
 }
 
@@ -226,32 +197,28 @@ query "restricted_ingress_ports" {
         else 'ok'
       end as status,
       case
-        when cidr_ipv4 = '0.0.0.0/0' and from_port not in (80, 443) then 'Unrestricted access on sensitive port ' || from_port
-        else 'Ingress restricted or using authorized ports.'
+        when cidr_ipv4 = '0.0.0.0/0' and from_port not in (80, 443) then 'Unrestricted access on port ' || from_port
+        else 'Restricted or authorized port.'
       end as reason,
-      region,
-      account_id
-    from
-      aws_vpc_security_group_rule
-    where
-      type = 'ingress';
+      region, account_id
+    from aws_vpc_security_group_rule where type = 'ingress';
   EOQ
 }
 
-# --- DASHBOARD HELPER QUERIES ---
+# --- DASHBOARD SUMMARY QUERIES ---
 
 query "compliance_summary_total" {
-  sql = "select 'Total Resources Scanned' as label, count(*) as value from aws_vpc_security_group;"
+  sql = "select 'Security Groups' as label, count(*) as value from aws_vpc_security_group;"
 }
 
 query "compliance_summary_alarm" {
-  sql = "select 'Active Alarms' as label, count(*) as value, 'alert' as type from aws_ebs_volume where not encrypted;"
+  sql = "select 'Unencrypted Volumes' as label, count(*) as value, 'alert' as type from aws_ebs_volume where not encrypted;"
 }
 
 query "storage_compliance_drilldown" {
-  sql = "select arn as resource, case when encrypted then 'ok' else 'alarm' end as status, region from aws_ebs_volume limit 10;"
+  sql = "select arn as resource, case when encrypted then 'ok' else 'alarm' end as status, region from aws_ebs_volume limit 5;"
 }
 
 query "network_compliance_drilldown" {
-  sql = "select vpc_id as resource, region, account_id from aws_vpc limit 10;"
+  sql = "select vpc_id as resource, region, account_id from aws_vpc limit 5;"
 }
