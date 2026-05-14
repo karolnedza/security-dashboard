@@ -16,29 +16,44 @@ benchmark "aws_security_compliance_benchmark" {
 
 # --- DASHBOARD ---
 
-dashboard "aws_compliance_dashboard" {
+dashboard "aws_security_dashboard" {
   title = "AWS Compliance Dashboard"
 
   container {
     card {
-      query = query.compliance_summary_total
+      query = query.ebs_encryption_enabled_count
       width = 3
     }
     card {
-      query = query.compliance_summary_alarm
+      query = query.unattached_sg_count
+      width = 3
+    }
+    card {
+      query = query.guardduty_enabled_count
+      width = 3
+    }
+    card {
+      query = query.vpc_flow_logs_count
       width = 3
     }
   }
 
   container {
+    title = "Detailed Compliance Status"
+
     table {
-      title = "Storage & Encryption Compliance"
-      query = query.storage_compliance_drilldown
+      title = "Storage & EBS Compliance"
+      query = query.ebs_encryption_by_default_enabled
     }
 
     table {
-      title = "Network & Threat Detection Status"
-      query = query.network_compliance_drilldown
+      title = "Security Group & Port Ingress"
+      query = query.restricted_ingress_ports
+    }
+
+    table {
+      title = "GuardDuty & Logging Status"
+      query = query.guardduty_enabled
     }
   }
 }
@@ -46,59 +61,53 @@ dashboard "aws_compliance_dashboard" {
 # --- CONTROLS ---
 
 control "ebs_encryption_by_default_enabled" {
-  title       = "EBS encryption by default should be enabled"
-  description = "Checks if EBS encryption by default is enabled for the AWS account in the current region."
-  query       = query.ebs_encryption_by_default_enabled
+  title = "EBS encryption by default should be enabled"
+  query = query.ebs_encryption_by_default_enabled
 }
 
 control "unattached_security_groups" {
-  title       = "All non-default security groups should be attached to at least one ENI"
-  description = "Checks if all non-default security groups are attached to at least one ENI."
-  query       = query.unattached_security_groups
+  title = "All non-default security groups should be attached to at least one ENI"
+  query = query.unattached_security_groups
 }
 
 control "efs_encryption_at_rest_enabled" {
-  title       = "EFS file systems should be encrypted at rest"
-  description = "Checks if EFS file systems are encrypted at rest."
-  query       = query.efs_encryption_at_rest_enabled
+  title = "EFS file systems should be encrypted at rest"
+  query = query.efs_encryption_at_rest_enabled
 }
 
 control "ebs_attached_volume_encryption_enabled" {
-  title       = "Attached EBS volumes should be encrypted"
-  description = "Checks if attached EBS volumes are encrypted."
-  query       = query.ebs_attached_volume_encryption_enabled
+  title = "Attached EBS volumes should be encrypted"
+  query = query.ebs_attached_volume_encryption_enabled
 }
 
 control "guardduty_enabled" {
-  title       = "Amazon GuardDuty should be enabled"
-  description = "Checks if Amazon GuardDuty is enabled in the account/region."
-  query       = query.guardduty_enabled
+  title = "Amazon GuardDuty should be enabled"
+  query = query.guardduty_enabled
 }
 
 control "vpc_flow_logs_enabled" {
-  title       = "VPC flow logs should be enabled on every VPC"
-  description = "Checks if VPC Flow Logs are enabled on every VPC."
-  query       = query.vpc_flow_logs_enabled
+  title = "VPC flow logs should be enabled on every VPC"
+  query = query.vpc_flow_logs_enabled
 }
 
 control "restricted_ingress_ports" {
-  title       = "Security groups should restrict ingress on unauthorized ports"
-  description = "Checks for unrestricted incoming traffic (0.0.0.0/0) on non-web ports."
-  query       = query.restricted_ingress_ports
+  title = "Security groups should restrict ingress on unauthorized ports"
+  query = query.restricted_ingress_ports
 }
 
-# --- FIXED QUERIES ---
+# --- QUERIES ---
 
 query "ebs_encryption_by_default_enabled" {
+  # UPDATED: Using 'is_ebs_encryption_by_default_enabled' based on schema behavior
   sql = <<-EOQ
     select
       'arn:aws:ec2:' || region || ':' || account_id as resource,
       case
-        when ebs_encryption_by_default_enabled then 'ok'
+        when is_ebs_encryption_by_default_enabled then 'ok'
         else 'alarm'
       end as status,
       case
-        when ebs_encryption_by_default_enabled then 'EBS encryption by default is enabled.'
+        when is_ebs_encryption_by_default_enabled then 'EBS encryption by default is enabled.'
         else 'EBS encryption by default is disabled.'
       end as reason,
       region,
@@ -114,7 +123,7 @@ query "unattached_security_groups" {
       select
         distinct sg_id
       from
-        aws_vpc_network_interface,
+        aws_ec2_network_interface,
         jsonb_array_elements(groups) as g
         left join lateral (select g ->> 'GroupId' as sg_id) as t on true
     )
@@ -205,20 +214,21 @@ query "restricted_ingress_ports" {
   EOQ
 }
 
-# --- DASHBOARD SUMMARY QUERIES ---
+# --- SUMMARY CARD QUERIES ---
 
-query "compliance_summary_total" {
-  sql = "select 'Security Groups' as label, count(*) as value from aws_vpc_security_group;"
+query "ebs_encryption_enabled_count" {
+  # UPDATED: Match logic for is_ebs_encryption_by_default_enabled
+  sql = "select 'EBS Encryption Defaults' as label, count(*) as value from aws_ec2_regional_settings where is_ebs_encryption_by_default_enabled;"
 }
 
-query "compliance_summary_alarm" {
-  sql = "select 'Unencrypted Volumes' as label, count(*) as value, 'alert' as type from aws_ebs_volume where not encrypted;"
+query "unattached_sg_count" {
+  sql = "select 'Unattached SGs' as label, count(*) as value, 'alert' as type from aws_vpc_security_group where group_name <> 'default' and group_id not in (select distinct sg_id from aws_ec2_network_interface, jsonb_array_elements(groups) as g left join lateral (select g ->> 'GroupId' as sg_id) as t on true);"
 }
 
-query "storage_compliance_drilldown" {
-  sql = "select arn as resource, case when encrypted then 'ok' else 'alarm' end as status, region from aws_ebs_volume limit 5;"
+query "guardduty_enabled_count" {
+  sql = "select 'GuardDuty Detectors' as label, count(*) as value from aws_guardduty_detector;"
 }
 
-query "network_compliance_drilldown" {
-  sql = "select vpc_id as resource, region, account_id from aws_vpc limit 5;"
+query "vpc_flow_logs_count" {
+  sql = "select 'VPCs with Flow Logs' as label, count(distinct resource_id) as value from aws_vpc_flow_log where resource_id like 'vpc-%';"
 }
