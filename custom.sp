@@ -10,7 +10,10 @@ benchmark "aws_security_compliance_benchmark" {
     control.ebs_attached_volume_encryption_enabled,
     control.guardduty_enabled,
     control.vpc_flow_logs_enabled,
-    control.restricted_ingress_ports
+    control.restricted_ingress_ports,
+    # --- ADDED BENCHMARK CONTROLS ---
+    control.iam_user_access_key_age_90,
+    control.cloudtrail_trail_exists
   ]
 }
 
@@ -39,6 +42,17 @@ dashboard "aws_security_dashboard" {
   }
 
   container {
+    card {
+      query = query.iam_access_keys_older_than_90_days_count
+      width = 6
+    }
+    card {
+      query = query.cloudtrail_trail_count
+      width = 6
+    }
+  }
+
+  container {
     title = "Detailed Compliance Status"
 
     table {
@@ -49,6 +63,16 @@ dashboard "aws_security_dashboard" {
     table {
       title = "Security Group & Port Ingress"
       query = query.restricted_ingress_ports
+    }
+
+    table {
+      title = "IAM Access Key Rotation"
+      query = query.iam_user_access_key_age_90
+    }
+
+    table {
+      title = "CloudTrail Configuration"
+      query = query.cloudtrail_trail_exists
     }
 
     table {
@@ -93,6 +117,18 @@ control "vpc_flow_logs_enabled" {
 control "restricted_ingress_ports" {
   title = "Security groups should restrict ingress on unauthorized ports"
   query = query.restricted_ingress_ports
+}
+
+# --- ADDED CONTROLS ---
+
+control "iam_user_access_key_age_90" {
+  title = "IAM user access keys should be rotated every 90 days or less"
+  query = query.iam_user_access_key_age_90
+}
+
+control "cloudtrail_trail_exists" {
+  title = "At least one CloudTrail trail should exist in the account"
+  query = query.cloudtrail_trail_exists
 }
 
 # --- QUERIES ---
@@ -214,6 +250,50 @@ query "restricted_ingress_ports" {
   EOQ
 }
 
+# --- ADDED QUERIES ---
+
+query "iam_user_access_key_age_90" {
+  sql = <<-EOQ
+    select
+      access_key_id as resource,
+      case
+        when status = 'Active' and create_date <= now() - interval '90 days' then 'alarm'
+        else 'ok'
+      end as status,
+      case
+        when status = 'Inactive' then user_name || ' access key ' || access_key_id || ' is inactive.'
+        when create_date <= now() - interval '90 days' then user_name || ' access key ' || access_key_id || ' was created ' || extract(day from (now() - create_date)) || ' days ago (exceeds 90 days).'
+        else user_name || ' access key ' || access_key_id || ' was created ' || extract(day from (now() - create_date)) || ' days ago.'
+      end as reason,
+      account_id
+    from
+      aws_iam_access_key;
+  EOQ
+}
+
+query "cloudtrail_trail_exists" {
+  sql = <<-EOQ
+    with trail_count as (
+      select count(*) as count from aws_cloudtrail_trail
+    )
+    select
+      'arn:aws:cloudtrail:' || r.name || ':' || r.account_id as resource,
+      case
+        when t.count > 0 then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when t.count > 0 then 'At least one CloudTrail trail exists in the account.'
+        else 'No CloudTrail trails exist in the account.'
+      end as reason,
+      r.name as region,
+      r.account_id
+    from
+      aws_region as r
+      cross join trail_count as t;
+  EOQ
+}
+
 # --- SUMMARY CARD QUERIES ---
 
 query "ebs_encryption_enabled_count" {
@@ -231,4 +311,14 @@ query "guardduty_enabled_count" {
 
 query "vpc_flow_logs_count" {
   sql = "select 'VPCs with Flow Logs' as label, count(distinct resource_id) as value from aws_vpc_flow_log where resource_id like 'vpc-%';"
+}
+
+# --- ADDED SUMMARY CARD QUERIES ---
+
+query "iam_access_keys_older_than_90_days_count" {
+  sql = "select 'Active Access Keys > 90 Days' as label, count(*) as value, 'alert' as type from aws_iam_access_key where status = 'Active' and create_date <= now() - interval '90 days';"
+}
+
+query "cloudtrail_trail_count" {
+  sql = "select 'CloudTrail Trails' as label, count(*) as value from aws_cloudtrail_trail;"
 }
