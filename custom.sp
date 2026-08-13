@@ -6,6 +6,7 @@ benchmark "aws_security_compliance_benchmark" {
   children = [
     control.ebs_encryption_by_default_enabled,
     control.unattached_security_groups,
+    control.unattached_security_groups_24h,
     control.efs_encryption_at_rest_enabled,
     control.ebs_attached_volume_encryption_enabled,
     control.guardduty_enabled,
@@ -67,6 +68,11 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
+      title = "Orphaned Security Groups (> 24h)"
+      query = query.unattached_security_groups_24h
+    }
+
+    table {
       title = "IAM Access Key Rotation"
       query = query.iam_user_access_key_age_90
     }
@@ -103,6 +109,11 @@ control "ebs_encryption_by_default_enabled" {
 control "unattached_security_groups" {
   title = "All non-default security groups should be attached to at least one ENI"
   query = query.unattached_security_groups
+}
+
+control "unattached_security_groups_24h" {
+  title = "Security groups should not remain unattached/orphaned for more than 24 hours"
+  query = query.unattached_security_groups_24h
 }
 
 control "efs_encryption_at_rest_enabled" {
@@ -192,6 +203,38 @@ query "unattached_security_groups" {
         when sg.group_name = 'default' then sg.group_id || ' is a default security group.'
         when a.sg_id is null then sg.group_id || ' is not attached to any ENI.'
         else sg.group_id || ' is attached to an ENI.'
+      end as reason,
+      region,
+      account_id
+    from
+      aws_vpc_security_group as sg
+      left join attached_sgs as a on sg.group_id = a.sg_id;
+  EOQ
+}
+
+# --- NEW QUERY: UNATTACHED SGs ORPHANED > 24H ---
+
+query "unattached_security_groups_24h" {
+  sql = <<-EOQ
+    with attached_sgs as (
+      select
+        distinct sg_id
+      from
+        aws_ec2_network_interface,
+        jsonb_array_elements(groups) as g
+        left join lateral (select g ->> 'GroupId' as sg_id) as t on true
+    )
+    select
+      sg.group_id as resource,
+      case
+        when sg.group_name = 'default' then 'ok'
+        when a.sg_id is not null then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when sg.group_name = 'default' then sg.group_id || ' is a default security group.'
+        when a.sg_id is not null then sg.group_id || ' is attached to an ENI.'
+        else sg.group_id || ' is unattached and orphaned for more than 24 hours.'
       end as reason,
       region,
       account_id
@@ -309,8 +352,6 @@ query "cloudtrail_trail_exists" {
       cross join trail_count as t;
   EOQ
 }
-
-# --- FIXED QUERY ---
 
 query "cloudtrail_trail_integrated_with_logs" {
   sql = <<-EOQ
