@@ -598,7 +598,7 @@ query "eks_cluster_endpoint_public_access_disabled" {
   EOQ
 }
 
-# --- FIXED QUERY ---
+# --- ALB & CLB ACCESS LOGGING QUERY ---
 
 query "alb_clb_access_logging_enabled" {
   sql = <<-EOQ
@@ -606,21 +606,11 @@ query "alb_clb_access_logging_enabled" {
       select
         arn as resource,
         case
-          when exists (
-            select 1
-            from jsonb_array_elements(load_balancer_attributes) as a
-            where (a ->> 'Key' = 'access_logs.s3.enabled' or a ->> 'key' = 'access_logs.s3.enabled')
-              and (a ->> 'Value' = 'true' or a ->> 'value' = 'true')
-          ) then 'ok'
+          when access_logs_s3_enabled then 'ok'
           else 'alarm'
         end as status,
         case
-          when exists (
-            select 1
-            from jsonb_array_elements(load_balancer_attributes) as a
-            where (a ->> 'Key' = 'access_logs.s3.enabled' or a ->> 'key' = 'access_logs.s3.enabled')
-              and (a ->> 'Value' = 'true' or a ->> 'value' = 'true')
-          ) then title || ' access logging enabled.'
+          when access_logs_s3_enabled then title || ' access logging enabled.'
           else title || ' access logging disabled.'
         end as reason,
         region,
@@ -634,11 +624,11 @@ query "alb_clb_access_logging_enabled" {
       select
         arn as resource,
         case
-          when coalesce((access_log ->> 'enabled')::boolean, (access_log ->> 'Enabled')::boolean, false) then 'ok'
+          when access_log_enabled then 'ok'
           else 'alarm'
         end as status,
         case
-          when coalesce((access_log ->> 'enabled')::boolean, (access_log ->> 'Enabled')::boolean, false) then title || ' access logging enabled.'
+          when access_log_enabled then title || ' access logging enabled.'
           else title || ' access logging disabled.'
         end as reason,
         region,
