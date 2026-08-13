@@ -20,7 +20,9 @@ benchmark "aws_security_compliance_benchmark" {
     control.ecs_task_definition_container_environment_no_secrets,
     control.eks_cluster_logging_enabled,
     control.eks_cluster_endpoint_public_access_disabled,
-    control.alb_clb_access_logging_enabled
+    control.alb_clb_access_logging_enabled,
+    # --- NEW BENCHMARK CONTROL ---
+    control.s3_bucket_logging_enabled
   ]
 }
 
@@ -95,6 +97,11 @@ dashboard "aws_security_dashboard" {
     table {
       title = "CloudFront Distribution Access Logging"
       query = query.cloudfront_distribution_logging_enabled
+    }
+
+    table {
+      title = "S3 Bucket Server Access Logging"
+      query = query.s3_bucket_logging_enabled
     }
 
     table {
@@ -216,6 +223,13 @@ control "alb_clb_access_logging_enabled" {
   query = query.alb_clb_access_logging_enabled
 }
 
+# --- NEW CONTROL ---
+
+control "s3_bucket_logging_enabled" {
+  title = "S3 buckets should have server access logging enabled"
+  query = query.s3_bucket_logging_enabled
+}
+
 # --- QUERIES ---
 
 query "ebs_encryption_by_default_enabled" {
@@ -313,7 +327,7 @@ query "ebs_attached_volume_encryption_enabled" {
     select
       arn as resource,
       case when encrypted then 'ok' else 'alarm' end as status,
-      case when encrypted then title || ' is encrypted.' else title || ' is not encrypted.' end as reason,
+      case when encrypted then title || ' is encrypted.' else title || ' is unencrypted.' end as reason,
       region, account_id
     from aws_ebs_volume where state = 'in-use';
   EOQ
@@ -598,8 +612,6 @@ query "eks_cluster_endpoint_public_access_disabled" {
   EOQ
 }
 
-# --- ALB & CLB ACCESS LOGGING QUERY ---
-
 query "alb_clb_access_logging_enabled" {
   sql = <<-EOQ
     with alb_logging as (
@@ -641,6 +653,27 @@ query "alb_clb_access_logging_enabled" {
     select * from alb_logging
     union all
     select * from clb_logging;
+  EOQ
+}
+
+# --- NEW QUERY ---
+
+query "s3_bucket_logging_enabled" {
+  sql = <<-EOQ
+    select
+      arn as resource,
+      case
+        when logging is not null then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when logging is not null then name || ' server access logging enabled.'
+        else name || ' server access logging disabled.'
+      end as reason,
+      region,
+      account_id
+    from
+      aws_s3_bucket;
   EOQ
 }
 
