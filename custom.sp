@@ -17,8 +17,9 @@ benchmark "aws_security_compliance_benchmark" {
     control.cloudtrail_trail_integrated_with_logs,
     control.cloudfront_distribution_logging_enabled,
     control.ecr_repository_image_scan_on_push_enabled,
+    control.ecs_task_definition_container_environment_no_secrets,
     # --- NEW BENCHMARK CONTROL ---
-    control.ecs_task_definition_container_environment_no_secrets
+    control.eks_cluster_logging_enabled
   ]
 }
 
@@ -106,6 +107,11 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
+      title = "EKS Cluster Control Plane Logging"
+      query = query.eks_cluster_logging_enabled
+    }
+
+    table {
       title = "GuardDuty & Logging Status"
       query = query.guardduty_enabled
     }
@@ -179,11 +185,16 @@ control "ecr_repository_image_scan_on_push_enabled" {
   query = query.ecr_repository_image_scan_on_push_enabled
 }
 
-# --- NEW CONTROL ---
-
 control "ecs_task_definition_container_environment_no_secrets" {
   title = "Secrets should not be passed as plain text environment variables in ECS container definitions"
   query = query.ecs_task_definition_container_environment_no_secrets
+}
+
+# --- NEW CONTROL ---
+
+control "eks_cluster_logging_enabled" {
+  title = "EKS clusters should have logging enabled for all log types"
+  query = query.eks_cluster_logging_enabled
 }
 
 # --- QUERIES ---
@@ -433,8 +444,6 @@ query "ecr_repository_image_scan_on_push_enabled" {
   EOQ
 }
 
-# --- NEW QUERY ---
-
 query "ecs_task_definition_container_environment_no_secrets" {
   sql = <<-EOQ
     with container_env_vars as (
@@ -493,6 +502,63 @@ query "ecs_task_definition_container_environment_no_secrets" {
     from
       aws_ecs_task_definition as td
       left join violating_tasks as v on td.task_definition_arn = v.task_definition_arn;
+  EOQ
+}
+
+# --- NEW QUERY ---
+
+query "eks_cluster_logging_enabled" {
+  sql = <<-EOQ
+    with cluster_logging as (
+      select
+        arn,
+        name,
+        region,
+        account_id,
+        jsonb_array_elements(
+          case
+            when logging is null then '[]'::jsonb
+            else logging
+          end
+        ) as l
+      from
+        aws_eks_cluster
+    ),
+    enabled_types as (
+      select
+        arn,
+        jsonb_array_elements_text(coalesce(l -> 'types', l -> 'Types', '[]'::jsonb)) as log_type
+      from
+        cluster_logging
+      where
+        coalesce((l ->> 'enabled')::boolean, (l ->> 'Enabled')::boolean, false) = true
+    ),
+    cluster_type_counts as (
+      select
+        arn,
+        count(distinct log_type) as enabled_count
+      from
+        enabled_types
+      where
+        log_type in ('api', 'audit', 'authenticator', 'controllerManager', 'scheduler')
+      group by
+        arn
+    )
+    select
+      c.arn as resource,
+      case
+        when t.enabled_count = 5 then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when t.enabled_count = 5 then c.name || ' has logging enabled for all log types.'
+        else c.name || ' does not have logging enabled for all log types.'
+      end as reason,
+      c.region,
+      c.account_id
+    from
+      aws_eks_cluster as c
+      left join cluster_type_counts as t on c.arn = t.arn;
   EOQ
 }
 
