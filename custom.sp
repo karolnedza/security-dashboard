@@ -11,9 +11,11 @@ benchmark "aws_security_compliance_benchmark" {
     control.guardduty_enabled,
     control.vpc_flow_logs_enabled,
     control.restricted_ingress_ports,
-    # --- ADDED BENCHMARK CONTROLS ---
     control.iam_user_access_key_age_90,
-    control.cloudtrail_trail_exists
+    control.cloudtrail_trail_exists,
+    # --- NEW BENCHMARK CONTROLS ---
+    control.cloudtrail_trail_integrated_with_logs,
+    control.cloudfront_distribution_logging_enabled
   ]
 }
 
@@ -71,8 +73,18 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
-      title = "CloudTrail Configuration"
+      title = "CloudTrail Configuration & Integration"
       query = query.cloudtrail_trail_exists
+    }
+
+    table {
+      title = "CloudTrail CloudWatch Integration"
+      query = query.cloudtrail_trail_integrated_with_logs
+    }
+
+    table {
+      title = "CloudFront Distribution Access Logging"
+      query = query.cloudfront_distribution_logging_enabled
     }
 
     table {
@@ -119,8 +131,6 @@ control "restricted_ingress_ports" {
   query = query.restricted_ingress_ports
 }
 
-# --- ADDED CONTROLS ---
-
 control "iam_user_access_key_age_90" {
   title = "IAM user access keys should be rotated every 90 days or less"
   query = query.iam_user_access_key_age_90
@@ -129,6 +139,18 @@ control "iam_user_access_key_age_90" {
 control "cloudtrail_trail_exists" {
   title = "At least one CloudTrail trail should exist in the account"
   query = query.cloudtrail_trail_exists
+}
+
+# --- NEW CONTROLS ---
+
+control "cloudtrail_trail_integrated_with_logs" {
+  title = "CloudTrail trails should send logs to CloudWatch Logs"
+  query = query.cloudtrail_trail_integrated_with_logs
+}
+
+control "cloudfront_distribution_logging_enabled" {
+  title = "CloudFront distributions should deliver access logs to an S3 bucket"
+  query = query.cloudfront_distribution_logging_enabled
 }
 
 # --- QUERIES ---
@@ -250,8 +272,6 @@ query "restricted_ingress_ports" {
   EOQ
 }
 
-# --- ADDED QUERIES ---
-
 query "iam_user_access_key_age_90" {
   sql = <<-EOQ
     select
@@ -294,6 +314,46 @@ query "cloudtrail_trail_exists" {
   EOQ
 }
 
+# --- NEW QUERIES ---
+
+query "cloudtrail_trail_integrated_with_logs" {
+  sql = <<-EOQ
+    select
+      arn as resource,
+      case
+        when cloud_watch_logs_log_group_arn is not null then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when cloud_watch_logs_log_group_arn is not null then title || ' is integrated with CloudWatch Logs.'
+        else title || ' is not integrated with CloudWatch Logs.'
+      end as reason,
+      region,
+      account_id
+    from
+      aws_cloudtrail_trail;
+  EOQ
+}
+
+query "cloudfront_distribution_logging_enabled" {
+  sql = <<-EOQ
+    select
+      arn as resource,
+      case
+        when logging is not null and (logging ->> 'Enabled')::boolean then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when logging is not null and (logging ->> 'Enabled')::boolean then id || ' logging is enabled.'
+        else id || ' logging is disabled.'
+      end as reason,
+      region,
+      account_id
+    from
+      aws_cloudfront_distribution;
+  EOQ
+}
+
 # --- SUMMARY CARD QUERIES ---
 
 query "ebs_encryption_enabled_count" {
@@ -312,8 +372,6 @@ query "guardduty_enabled_count" {
 query "vpc_flow_logs_count" {
   sql = "select 'VPCs with Flow Logs' as label, count(distinct resource_id) as value from aws_vpc_flow_log where resource_id like 'vpc-%';"
 }
-
-# --- ADDED SUMMARY CARD QUERIES ---
 
 query "iam_access_keys_older_than_90_days_count" {
   sql = "select 'Active Access Keys > 90 Days' as label, count(*) as value, 'alert' as type from aws_iam_access_key where status = 'Active' and create_date <= now() - interval '90 days';"
