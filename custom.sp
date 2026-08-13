@@ -19,7 +19,9 @@ benchmark "aws_security_compliance_benchmark" {
     control.ecr_repository_image_scan_on_push_enabled,
     control.ecs_task_definition_container_environment_no_secrets,
     control.eks_cluster_logging_enabled,
-    control.eks_cluster_endpoint_public_access_disabled
+    control.eks_cluster_endpoint_public_access_disabled,
+    # --- NEW BENCHMARK CONTROL ---
+    control.alb_clb_access_logging_enabled
   ]
 }
 
@@ -117,6 +119,11 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
+      title = "ALB & CLB Access Logging"
+      query = query.alb_clb_access_logging_enabled
+    }
+
+    table {
       title = "GuardDuty & Logging Status"
       query = query.guardduty_enabled
     }
@@ -203,6 +210,13 @@ control "eks_cluster_logging_enabled" {
 control "eks_cluster_endpoint_public_access_disabled" {
   title = "EKS cluster API server endpoints should not be publicly accessible"
   query = query.eks_cluster_endpoint_public_access_disabled
+}
+
+# --- NEW CONTROL ---
+
+control "alb_clb_access_logging_enabled" {
+  title = "ALB and CLB load balancers should have access logging enabled"
+  query = query.alb_clb_access_logging_enabled
 }
 
 # --- QUERIES ---
@@ -568,8 +582,6 @@ query "eks_cluster_logging_enabled" {
   EOQ
 }
 
-# --- FIXED QUERY ---
-
 query "eks_cluster_endpoint_public_access_disabled" {
   sql = <<-EOQ
     select
@@ -586,6 +598,50 @@ query "eks_cluster_endpoint_public_access_disabled" {
       account_id
     from
       aws_eks_cluster;
+  EOQ
+}
+
+# --- NEW QUERY ---
+
+query "alb_clb_access_logging_enabled" {
+  sql = <<-EOQ
+    with alb_logging as (
+      select
+        arn as resource,
+        case
+          when access_logs_s3_enabled then 'ok'
+          else 'alarm'
+        end as status,
+        case
+          when access_logs_s3_enabled then title || ' access logging enabled.'
+          else title || ' access logging disabled.'
+        end as reason,
+        region,
+        account_id
+      from
+        aws_ec2_application_load_balancer
+      where
+        type = 'application'
+    ),
+    clb_logging as (
+      select
+        arn as resource,
+        case
+          when coalesce((access_log ->> 'enabled')::boolean, (access_log ->> 'Enabled')::boolean, false) then 'ok'
+          else 'alarm'
+        end as status,
+        case
+          when coalesce((access_log ->> 'enabled')::boolean, (access_log ->> 'Enabled')::boolean, false) then title || ' access logging enabled.'
+          else title || ' access logging disabled.'
+        end as reason,
+        region,
+        account_id
+      from
+        aws_ec2_classic_load_balancer
+    )
+    select * from alb_logging
+    union all
+    select * from clb_logging;
   EOQ
 }
 
