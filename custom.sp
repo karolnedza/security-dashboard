@@ -16,8 +16,9 @@ benchmark "aws_security_compliance_benchmark" {
     control.cloudtrail_trail_exists,
     control.cloudtrail_trail_integrated_with_logs,
     control.cloudfront_distribution_logging_enabled,
+    control.ecr_repository_image_scan_on_push_enabled,
     # --- NEW BENCHMARK CONTROL ---
-    control.ecr_repository_image_scan_on_push_enabled
+    control.ecs_task_definition_container_environment_no_secrets
   ]
 }
 
@@ -100,6 +101,11 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
+      title = "ECS Container Plaintext Secrets"
+      query = query.ecs_task_definition_container_environment_no_secrets
+    }
+
+    table {
       title = "GuardDuty & Logging Status"
       query = query.guardduty_enabled
     }
@@ -168,11 +174,16 @@ control "cloudfront_distribution_logging_enabled" {
   query = query.cloudfront_distribution_logging_enabled
 }
 
-# --- NEW CONTROL ---
-
 control "ecr_repository_image_scan_on_push_enabled" {
   title = "ECR private repositories should have image scanning enabled on push"
   query = query.ecr_repository_image_scan_on_push_enabled
+}
+
+# --- NEW CONTROL ---
+
+control "ecs_task_definition_container_environment_no_secrets" {
+  title = "Secrets should not be passed as plain text environment variables in ECS container definitions"
+  query = query.ecs_task_definition_container_environment_no_secrets
 }
 
 # --- QUERIES ---
@@ -403,8 +414,6 @@ query "cloudfront_distribution_logging_enabled" {
   EOQ
 }
 
-# --- NEW QUERY ---
-
 query "ecr_repository_image_scan_on_push_enabled" {
   sql = <<-EOQ
     select
@@ -421,6 +430,69 @@ query "ecr_repository_image_scan_on_push_enabled" {
       account_id
     from
       aws_ecr_repository;
+  EOQ
+}
+
+# --- NEW QUERY ---
+
+query "ecs_task_definition_container_environment_no_secrets" {
+  sql = <<-EOQ
+    with container_env_vars as (
+      select
+        task_definition_arn,
+        coalesce(c ->> 'name', c ->> 'Name') as container_name,
+        coalesce(e ->> 'name', e ->> 'Name') as env_name
+      from
+        aws_ecs_task_definition,
+        jsonb_array_elements(container_definitions) as c,
+        jsonb_array_elements(
+          case
+            when c -> 'environment' is not null then c -> 'environment'
+            when c -> 'Environment' is not null then c -> 'Environment'
+            else '[]'::jsonb
+          end
+        ) as e
+    ),
+    violating_tasks as (
+      select
+        task_definition_arn,
+        string_agg(distinct container_name || ':' || env_name, ', ') as violations
+      from
+        container_env_vars
+      where
+        upper(env_name) in (
+          'AWS_ACCESS_KEY_ID',
+          'AWS_SECRET_ACCESS_KEY',
+          'AWS_SESSION_TOKEN',
+          'DB_PASSWORD',
+          'DATABASE_URL',
+          'REDIS_AUTH',
+          'NPM_TOKEN',
+          'GITHUB_TOKEN',
+          'API_KEY',
+          'SECRET_KEY',
+          'JWT_SECRET',
+          'ENCRYPTION_KEY',
+          'PRIVATE_KEY'
+        )
+      group by
+        task_definition_arn
+    )
+    select
+      td.task_definition_arn as resource,
+      case
+        when v.task_definition_arn is not null then 'alarm'
+        else 'ok'
+      end as status,
+      case
+        when v.task_definition_arn is not null then td.title || ' contains sensitive secrets in environment variables (' || v.violations || ').'
+        else td.title || ' has no secrets passed as container environment variables.'
+      end as reason,
+      td.region,
+      td.account_id
+    from
+      aws_ecs_task_definition as td
+      left join violating_tasks as v on td.task_definition_arn = v.task_definition_arn;
   EOQ
 }
 
