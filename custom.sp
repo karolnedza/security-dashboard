@@ -18,8 +18,9 @@ benchmark "aws_security_compliance_benchmark" {
     control.cloudfront_distribution_logging_enabled,
     control.ecr_repository_image_scan_on_push_enabled,
     control.ecs_task_definition_container_environment_no_secrets,
+    control.eks_cluster_logging_enabled,
     # --- NEW BENCHMARK CONTROL ---
-    control.eks_cluster_logging_enabled
+    control.eks_cluster_endpoint_public_access_disabled
   ]
 }
 
@@ -112,6 +113,11 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
+      title = "EKS Public API Endpoint Access"
+      query = query.eks_cluster_endpoint_public_access_disabled
+    }
+
+    table {
       title = "GuardDuty & Logging Status"
       query = query.guardduty_enabled
     }
@@ -190,11 +196,16 @@ control "ecs_task_definition_container_environment_no_secrets" {
   query = query.ecs_task_definition_container_environment_no_secrets
 }
 
-# --- NEW CONTROL ---
-
 control "eks_cluster_logging_enabled" {
   title = "EKS clusters should have logging enabled for all log types"
   query = query.eks_cluster_logging_enabled
+}
+
+# --- NEW CONTROL ---
+
+control "eks_cluster_endpoint_public_access_disabled" {
+  title = "EKS cluster API server endpoints should not be publicly accessible"
+  query = query.eks_cluster_endpoint_public_access_disabled
 }
 
 # --- QUERIES ---
@@ -505,8 +516,6 @@ query "ecs_task_definition_container_environment_no_secrets" {
   EOQ
 }
 
-# --- NEW QUERY ---
-
 query "eks_cluster_logging_enabled" {
   sql = <<-EOQ
     with cluster_logging as (
@@ -559,6 +568,27 @@ query "eks_cluster_logging_enabled" {
     from
       aws_eks_cluster as c
       left join cluster_type_counts as t on c.arn = t.arn;
+  EOQ
+}
+
+# --- NEW QUERY ---
+
+query "eks_cluster_endpoint_public_access_disabled" {
+  sql = <<-EOQ
+    select
+      arn as resource,
+      case
+        when endpoint_public_access then 'alarm'
+        else 'ok'
+      end as status,
+      case
+        when endpoint_public_access then name || ' API server endpoint is publicly accessible.'
+        else name || ' API server endpoint is not publicly accessible.'
+      end as reason,
+      region,
+      account_id
+    from
+      aws_eks_cluster;
   EOQ
 }
 
