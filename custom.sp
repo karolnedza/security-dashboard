@@ -19,7 +19,6 @@ benchmark "aws_security_compliance_benchmark" {
     control.ecr_repository_image_scan_on_push_enabled,
     control.ecs_task_definition_container_environment_no_secrets,
     control.eks_cluster_logging_enabled,
-    # --- NEW BENCHMARK CONTROL ---
     control.eks_cluster_endpoint_public_access_disabled
   ]
 }
@@ -200,8 +199,6 @@ control "eks_cluster_logging_enabled" {
   title = "EKS clusters should have logging enabled for all log types"
   query = query.eks_cluster_logging_enabled
 }
-
-# --- NEW CONTROL ---
 
 control "eks_cluster_endpoint_public_access_disabled" {
   title = "EKS cluster API server endpoints should not be publicly accessible"
@@ -571,18 +568,18 @@ query "eks_cluster_logging_enabled" {
   EOQ
 }
 
-# --- NEW QUERY ---
+# --- FIXED QUERY ---
 
 query "eks_cluster_endpoint_public_access_disabled" {
   sql = <<-EOQ
     select
       arn as resource,
       case
-        when endpoint_public_access then 'alarm'
+        when coalesce((resources_vpc_config ->> 'endpointPublicAccess')::boolean, (resources_vpc_config ->> 'EndpointPublicAccess')::boolean, false) then 'alarm'
         else 'ok'
       end as status,
       case
-        when endpoint_public_access then name || ' API server endpoint is publicly accessible.'
+        when coalesce((resources_vpc_config ->> 'endpointPublicAccess')::boolean, (resources_vpc_config ->> 'EndpointPublicAccess')::boolean, false) then name || ' API server endpoint is publicly accessible.'
         else name || ' API server endpoint is not publicly accessible.'
       end as reason,
       region,
