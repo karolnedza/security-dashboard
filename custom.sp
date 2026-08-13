@@ -15,7 +15,9 @@ benchmark "aws_security_compliance_benchmark" {
     control.iam_user_access_key_age_90,
     control.cloudtrail_trail_exists,
     control.cloudtrail_trail_integrated_with_logs,
-    control.cloudfront_distribution_logging_enabled
+    control.cloudfront_distribution_logging_enabled,
+    # --- NEW BENCHMARK CONTROL ---
+    control.ecr_repository_image_scan_on_push_enabled
   ]
 }
 
@@ -93,6 +95,11 @@ dashboard "aws_security_dashboard" {
     }
 
     table {
+      title = "ECR Image Scanning Configuration"
+      query = query.ecr_repository_image_scan_on_push_enabled
+    }
+
+    table {
       title = "GuardDuty & Logging Status"
       query = query.guardduty_enabled
     }
@@ -161,6 +168,13 @@ control "cloudfront_distribution_logging_enabled" {
   query = query.cloudfront_distribution_logging_enabled
 }
 
+# --- NEW CONTROL ---
+
+control "ecr_repository_image_scan_on_push_enabled" {
+  title = "ECR private repositories should have image scanning enabled on push"
+  query = query.ecr_repository_image_scan_on_push_enabled
+}
+
 # --- QUERIES ---
 
 query "ebs_encryption_by_default_enabled" {
@@ -211,8 +225,6 @@ query "unattached_security_groups" {
       left join attached_sgs as a on sg.group_id = a.sg_id;
   EOQ
 }
-
-# --- NEW QUERY: UNATTACHED SGs ORPHANED > 24H ---
 
 query "unattached_security_groups_24h" {
   sql = <<-EOQ
@@ -388,6 +400,27 @@ query "cloudfront_distribution_logging_enabled" {
       account_id
     from
       aws_cloudfront_distribution;
+  EOQ
+}
+
+# --- NEW QUERY ---
+
+query "ecr_repository_image_scan_on_push_enabled" {
+  sql = <<-EOQ
+    select
+      arn as resource,
+      case
+        when image_scanning_configuration ->> 'ScanOnPush' = 'true' then 'ok'
+        else 'alarm'
+      end as status,
+      case
+        when image_scanning_configuration ->> 'ScanOnPush' = 'true' then repository_name || ' image scanning on push is enabled.'
+        else repository_name || ' image scanning on push is disabled.'
+      end as reason,
+      region,
+      account_id
+    from
+      aws_ecr_repository;
   EOQ
 }
 
