@@ -313,7 +313,7 @@ query "ebs_attached_volume_encryption_enabled" {
     select
       arn as resource,
       case when encrypted then 'ok' else 'alarm' end as status,
-      case when encrypted then title || ' is encrypted.' else title || ' is unencrypted.' end as reason,
+      case when encrypted then title || ' is encrypted.' else title || ' is not encrypted.' end as reason,
       region, account_id
     from aws_ebs_volume where state = 'in-use';
   EOQ
@@ -606,19 +606,21 @@ query "alb_clb_access_logging_enabled" {
       select
         arn as resource,
         case
-          when access_logs_s3_enabled then 'ok'
+          when lb ->> 'Value' = 'true' then 'ok'
           else 'alarm'
         end as status,
         case
-          when access_logs_s3_enabled then title || ' access logging enabled.'
+          when lb ->> 'Value' = 'true' then title || ' access logging enabled.'
           else title || ' access logging disabled.'
         end as reason,
         region,
         account_id
       from
         aws_ec2_application_load_balancer
+        cross join jsonb_array_elements(load_balancer_attributes) as lb
       where
         type = 'application'
+        and lb ->> 'Key' = 'access_logs.s3.enabled'
     ),
     clb_logging as (
       select
