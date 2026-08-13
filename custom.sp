@@ -13,7 +13,6 @@ benchmark "aws_security_compliance_benchmark" {
     control.restricted_ingress_ports,
     control.iam_user_access_key_age_90,
     control.cloudtrail_trail_exists,
-    # --- NEW BENCHMARK CONTROLS ---
     control.cloudtrail_trail_integrated_with_logs,
     control.cloudfront_distribution_logging_enabled
   ]
@@ -141,8 +140,6 @@ control "cloudtrail_trail_exists" {
   query = query.cloudtrail_trail_exists
 }
 
-# --- NEW CONTROLS ---
-
 control "cloudtrail_trail_integrated_with_logs" {
   title = "CloudTrail trails should send logs to CloudWatch Logs"
   query = query.cloudtrail_trail_integrated_with_logs
@@ -156,7 +153,6 @@ control "cloudfront_distribution_logging_enabled" {
 # --- QUERIES ---
 
 query "ebs_encryption_by_default_enabled" {
-  # UPDATED: Using 'is_ebs_encryption_by_default_enabled' based on schema behavior
   sql = <<-EOQ
     select
       'arn:aws:ec2:' || region || ':' || account_id as resource,
@@ -314,18 +310,18 @@ query "cloudtrail_trail_exists" {
   EOQ
 }
 
-# --- NEW QUERIES ---
+# --- FIXED QUERY ---
 
 query "cloudtrail_trail_integrated_with_logs" {
   sql = <<-EOQ
     select
       arn as resource,
       case
-        when cloud_watch_logs_log_group_arn is not null then 'ok'
+        when log_group_arn is not null then 'ok'
         else 'alarm'
       end as status,
       case
-        when cloud_watch_logs_log_group_arn is not null then title || ' is integrated with CloudWatch Logs.'
+        when log_group_arn is not null then title || ' is integrated with CloudWatch Logs.'
         else title || ' is not integrated with CloudWatch Logs.'
       end as reason,
       region,
@@ -357,7 +353,6 @@ query "cloudfront_distribution_logging_enabled" {
 # --- SUMMARY CARD QUERIES ---
 
 query "ebs_encryption_enabled_count" {
-  # UPDATED: Match logic for is_ebs_encryption_by_default_enabled
   sql = "select 'EBS Encryption Defaults' as label, count(*) as value from aws_ec2_regional_settings where is_ebs_encryption_by_default_enabled;"
 }
 
