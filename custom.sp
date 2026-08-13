@@ -20,7 +20,6 @@ benchmark "aws_security_compliance_benchmark" {
     control.ecs_task_definition_container_environment_no_secrets,
     control.eks_cluster_logging_enabled,
     control.eks_cluster_endpoint_public_access_disabled,
-    # --- NEW BENCHMARK CONTROL ---
     control.alb_clb_access_logging_enabled
   ]
 }
@@ -211,8 +210,6 @@ control "eks_cluster_endpoint_public_access_disabled" {
   title = "EKS cluster API server endpoints should not be publicly accessible"
   query = query.eks_cluster_endpoint_public_access_disabled
 }
-
-# --- NEW CONTROL ---
 
 control "alb_clb_access_logging_enabled" {
   title = "ALB and CLB load balancers should have access logging enabled"
@@ -601,7 +598,7 @@ query "eks_cluster_endpoint_public_access_disabled" {
   EOQ
 }
 
-# --- NEW QUERY ---
+# --- FIXED QUERY ---
 
 query "alb_clb_access_logging_enabled" {
   sql = <<-EOQ
@@ -609,11 +606,21 @@ query "alb_clb_access_logging_enabled" {
       select
         arn as resource,
         case
-          when access_logs_s3_enabled then 'ok'
+          when exists (
+            select 1
+            from jsonb_array_elements(load_balancer_attributes) as a
+            where (a ->> 'Key' = 'access_logs.s3.enabled' or a ->> 'key' = 'access_logs.s3.enabled')
+              and (a ->> 'Value' = 'true' or a ->> 'value' = 'true')
+          ) then 'ok'
           else 'alarm'
         end as status,
         case
-          when access_logs_s3_enabled then title || ' access logging enabled.'
+          when exists (
+            select 1
+            from jsonb_array_elements(load_balancer_attributes) as a
+            where (a ->> 'Key' = 'access_logs.s3.enabled' or a ->> 'key' = 'access_logs.s3.enabled')
+              and (a ->> 'Value' = 'true' or a ->> 'value' = 'true')
+          ) then title || ' access logging enabled.'
           else title || ' access logging disabled.'
         end as reason,
         region,
